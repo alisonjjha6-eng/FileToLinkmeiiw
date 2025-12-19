@@ -122,7 +122,7 @@ MSG_LOG_FILE_MISSING = "⚠️ **Log File Missing:** Could not find the log file
 # =====================================================================================
 
 MSG_BUTTON_STREAM_NOW = "🖥️ Stream"
-MSG_BUTTON_DOWNLOAD = "🚀 Download"
+MSG_BUTTON_DOWNLOAD = "🚀 دانلودههه"
 MSG_BUTTON_GET_HELP = "📖 Get Help"
 MSG_BUTTON_CANCEL_BROADCAST = "🛑 Cancel Broadcast"
 MSG_BUTTON_VIEW_PROFILE = "👤 View User Profile"
@@ -389,3 +389,4 @@ MSG_SYSTEM_STATS = (
 )
 
 MSG_DB_STATS = "📊 **Database Statistics**\n\n> 👥 **Total Users:** `{total_users}`"
+
