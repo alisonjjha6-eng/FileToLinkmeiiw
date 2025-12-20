@@ -78,7 +78,7 @@ async def about_callback(client: Client, callback_query: CallbackQuery):
         buttons = [
             [InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command")],
             [
-                InlineKeyboardButton(MSG_BUTTON_GITHUB, url="https://github.com/fyaz05/FileToLink"),
+                InlineKeyboardButton(MSG_BUTTON_GITHUB, callback_data="persian_help"),
                 InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")
             ]
         ]
@@ -142,6 +142,34 @@ async def restart_broadcast_callback(client: Client, callback_query: CallbackQue
             await asyncio.sleep(e.value)
             await callback_query.answer("An error occurred. Please try again.", show_alert=True)
 
+@StreamBot.on_callback_query(filters.regex(r"^persian_help$"))
+async def persian_help_callback(client: Client, callback_query: CallbackQuery):
+    try:
+        await callback_query.answer()
+        buttons = [
+            [InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command")],
+            [InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")]
+        ]
+        force_button = await get_force_channel_button(client)
+        if force_button:
+            buttons.insert(1, force_button)  # اگر جوین اجباری داری، دکمه جوین رو هم نشون بده
+
+        await callback_query.message.edit_text(
+            text=MSG_PERSIAN_HELP.format(max_files=Var.MAX_BATCH_FILES),
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True,
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+    except MessageNotModified:
+        pass
+    except Exception as e:
+        logger.error(f"Error in Persian help callback: {e}", exc_info=True)
+        try:
+            await callback_query.answer("خطایی رخ داد. دوباره امتحان کنید.", show_alert=True)
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            await callback_query.answer("خطایی رخ داد. دوباره امتحان کنید.", show_alert=True)
+          
 @StreamBot.on_callback_query(filters.regex(r"^close_panel$"))
 async def close_panel_callback(client: Client, callback_query: CallbackQuery):
     try:
@@ -221,3 +249,4 @@ async def fallback_callback(client: Client, callback_query: CallbackQuery):
             await callback_query.answer(MSG_ERROR_CALLBACK_UNSUPPORTED, show_alert=True)
     except Exception as e:
         logger.error(f"Error in fallback callback: {e}", exc_info=True)
+
