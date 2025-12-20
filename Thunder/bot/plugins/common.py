@@ -1,256 +1,282 @@
+# Thunder/bot/plugins/common.py
+
 import asyncio
-from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait, MessageNotModified, MessageDeleteForbidden
-from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
-                            InlineKeyboardMarkup)
+import time
+from datetime import datetime, timedelta
+
+from pyrogram import Client, filters
+from pyrogram.errors import FloodWait, MessageNotModified
+from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
+                            Message, User)
+
 from Thunder.bot import StreamBot
-from Thunder.utils.broadcast import broadcast_ids
-from Thunder.utils.decorators import owner_only
+from Thunder.utils.bot_utils import (gen_dc_txt, get_user, log_newusr,
+                                     reply_user_err)
+from Thunder.utils.database import db
+from Thunder.utils.decorators import check_banned
+from Thunder.utils.file_properties import get_fname, get_fsize, parse_fid
+from Thunder.utils.force_channel import force_channel_check, get_force_info
+from Thunder.utils.human_readable import humanbytes
 from Thunder.utils.logger import logger
 from Thunder.utils.messages import (
-    MSG_ABOUT, MSG_BROADCAST_CANCEL, MSG_BUTTON_ABOUT, MSG_BUTTON_CLOSE,
-    MSG_BUTTON_GET_HELP, MSG_BUTTON_GITHUB, MSG_BUTTON_JOIN_CHANNEL,
-    MSG_ERROR_BROADCAST_INSTRUCTION, MSG_ERROR_BROADCAST_RESTART,
-    MSG_ERROR_CALLBACK_UNSUPPORTED, MSG_HELP, MSG_PERSIAN_HELP
+    MSG_ABOUT, MSG_BUTTON_ABOUT, MSG_BUTTON_CLOSE, MSG_BUTTON_GET_HELP,
+    MSG_BUTTON_GITHUB, MSG_BUTTON_JOIN_CHANNEL, MSG_BUTTON_VIEW_PROFILE,
+    MSG_COMMUNITY_CHANNEL, MSG_DC_ANON_ERROR, MSG_DC_FILE_ERROR,
+    MSG_DC_FILE_INFO, MSG_DC_INVALID_USAGE, MSG_DC_UNKNOWN,
+    MSG_ERROR_USER_INFO, MSG_FILE_TYPE_ANIMATION, MSG_FILE_TYPE_AUDIO,
+    MSG_FILE_TYPE_DOCUMENT, MSG_FILE_TYPE_PHOTO, MSG_FILE_TYPE_STICKER,
+    MSG_FILE_TYPE_UNKNOWN, MSG_FILE_TYPE_VIDEO, MSG_FILE_TYPE_VIDEO_NOTE,
+    MSG_FILE_TYPE_VOICE, MSG_HELP, MSG_PING_RESPONSE, MSG_PING_START,
+    MSG_TOKEN_ACTIVATED, MSG_TOKEN_FAILED, MSG_TOKEN_INVALID, MSG_WELCOME
 )
 from Thunder.vars import Var
 
-async def get_force_channel_button(client: Client):
-    if not Var.FORCE_CHANNEL_ID:
-        return None
-    try:
-        try:
-            chat = await client.get_chat(Var.FORCE_CHANNEL_ID)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            chat = await client.get_chat(Var.FORCE_CHANNEL_ID)
-        if chat:
-            invite_link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else None)
-            if invite_link:
-                # return a single row (list) containing one InlineKeyboardButton
-                return [InlineKeyboardButton(
-                    MSG_BUTTON_JOIN_CHANNEL.format(channel_title=chat.title or "Channel"),
-                    url=invite_link
-                )]
-    except Exception as e:
-        logger.error(f"Error getting force channel button: {e}", exc_info=True)
-    return None
-
-@StreamBot.on_callback_query(filters.regex(r"^help_command$"))
-async def help_callback(client: Client, callback_query: CallbackQuery):
-    try:
-        await callback_query.answer()
-        buttons = [[InlineKeyboardButton(MSG_BUTTON_ABOUT, callback_data="about_command")]]
-        force_button = await get_force_channel_button(client)
-        if force_button:
-            buttons.append(force_button)
-        buttons.append([InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")])
-        try:
-            await callback_query.message.edit_text(
-                text=MSG_HELP.format(max_files=Var.MAX_BATCH_FILES),
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True
-            )
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.message.edit_text(
-                text=MSG_HELP.format(max_files=Var.MAX_BATCH_FILES),
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True
-            )
-    except MessageNotModified:
-        pass
-    except Exception as e:
-        logger.error(f"Error in help callback: {e}", exc_info=True)
-        try:
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
-
-@StreamBot.on_callback_query(filters.regex(r"^about_command$"))
-async def about_callback(client: Client, callback_query: CallbackQuery):
-    try:
-        await callback_query.answer()
-        buttons = [
-            [InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command")],
-            [
-                InlineKeyboardButton(MSG_BUTTON_GITHUB, callback_data="persian_help"),
-                InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")
-            ]
-        ]
-        try:
-            await callback_query.message.edit_text(
-                text=MSG_ABOUT,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True
-            )
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.message.edit_text(
-                text=MSG_ABOUT,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True
-            )
-    except MessageNotModified:
-        pass
-    except Exception as e:
-        logger.error(f"Error in about callback: {e}", exc_info=True)
-        try:
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
-
-@StreamBot.on_callback_query(filters.regex(r"^restart_broadcast$"))
-async def restart_broadcast_callback(client: Client, callback_query: CallbackQuery):
-    if not await owner_only(client, callback_query):
+@StreamBot.on_message(filters.command("start") & filters.private)
+async def start_command(bot: Client, msg: Message):
+    if not await check_banned(bot, msg):
         return
-    try:
-        try:
-            await callback_query.answer(MSG_ERROR_BROADCAST_RESTART, show_alert=True)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer(MSG_ERROR_BROADCAST_RESTART, show_alert=True)
-        buttons = [
-            [
-                InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command"),
-                InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")
-            ]
-        ]
-        try:
-            await callback_query.message.edit_text(
-                MSG_ERROR_BROADCAST_INSTRUCTION,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True
-            )
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.message.edit_text(
-                MSG_ERROR_BROADCAST_INSTRUCTION,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True
-            )
-    except Exception as e:
-        logger.error(f"Error in restart broadcast callback: {e}", exc_info=True)
-        try:
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
-
-@StreamBot.on_callback_query(filters.regex(r"^persian_help$"))
-async def persian_help_callback(client: Client, callback_query: CallbackQuery):
-    try:
-        await callback_query.answer()
-        buttons = [
-            [InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command")],
-            [InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")]
-        ]
-        force_button = await get_force_channel_button(client)
-        if force_button:
-            # insert the force join button row if present
-            buttons.insert(1, force_button)
-        try:
-            await callback_query.message.edit_text(
-                text=MSG_PERSIAN_HELP.format(max_files=Var.MAX_BATCH_FILES),
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True,
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.message.edit_text(
-                text=MSG_PERSIAN_HELP.format(max_files=Var.MAX_BATCH_FILES),
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=True,
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-    except MessageNotModified:
-        pass
-    except Exception as e:
-        logger.error(f"Error in Persian help callback: {e}", exc_info=True)
-        try:
-            await callback_query.answer("خطایی رخ داد. دوباره امتحان کنید.", show_alert=True)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer("خطایی رخ داد. دوباره امتحان کنید.", show_alert=True)
-
-@StreamBot.on_callback_query(filters.regex(r"^close_panel$"))
-async def close_panel_callback(client: Client, callback_query: CallbackQuery):
-    try:
-        try:
-            await callback_query.answer()
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer()
-        try:
-            try:
-                await callback_query.message.delete()
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-                await callback_query.message.delete()
-        except MessageDeleteForbidden:
-            logger.debug(f"Failed to delete callback query message due to permissions. Message ID: {callback_query.message.id}")
-        except Exception as e:
-            logger.error(f"Error deleting callback query message: {e}", exc_info=True)
-        if callback_query.message.reply_to_message:
-            try:
-                reply_msg = callback_query.message.reply_to_message
+    user = msg.from_user
+    if user:
+        await log_newusr(bot, user.id, user.first_name)
+    
+    if len(msg.command) == 2:
+        payload = msg.command[1]
+        
+        if payload == "start":
+            pass
+        else:
+            token = await db.token_col.find_one({"token": payload})
+            if token:
+                if token["user_id"] != user.id:
+                    try:
+                        return await msg.reply_text(text=MSG_TOKEN_FAILED.format(
+                            reason="This activation link is not for your account.",
+                            error_id=str(int(time.time()))[-8:]
+                        ))
+                    except FloodWait as e:
+                        await asyncio.sleep(e.value)
+                        return await msg.reply_text(text=MSG_TOKEN_FAILED.format(
+                            reason="This activation link is not for your account.",
+                            error_id=str(int(time.time()))[-8:]
+                        ))
+                
+                if token.get("activated"):
+                    try:
+                        return await msg.reply_text(text=MSG_TOKEN_FAILED.format(
+                            reason="Token has already been activated.",
+                            error_id=str(int(time.time()))[-8:]
+                        ))
+                    except FloodWait as e:
+                        await asyncio.sleep(e.value)
+                        return await msg.reply_text(text=MSG_TOKEN_FAILED.format(
+                            reason="Token has already been activated.",
+                            error_id=str(int(time.time()))[-8:]
+                        ))
+                
+                now = datetime.utcnow()
+                exp = now + timedelta(hours=Var.TOKEN_TTL_HOURS)
+                
+                await db.token_col.update_one(
+                    {"token": payload, "user_id": user.id},
+                    {"$set": {"activated": True, "created_at": now, "expires_at": exp}}
+                )
+                
+                hrs = round((exp - now).total_seconds() / 3600, 1)
                 try:
-                    await reply_msg.delete()
+                    return await msg.reply_text(text=MSG_TOKEN_ACTIVATED.format(duration_hours=hrs))
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    await reply_msg.delete()
-            except MessageDeleteForbidden:
-                logger.debug(f"Failed to delete replied message due to permissions. Message ID: {reply_msg.id}")
-            except Exception as e:
-                logger.error(f"Error deleting replied message: {e}", exc_info=True)
-    except Exception as e:
-        logger.error(f"General error in close panel callback: {e}", exc_info=True)
-
-@StreamBot.on_callback_query(filters.regex(r"^cancel_"))
-async def cancel_broadcast(client: Client, callback_query: CallbackQuery):
+                    return await msg.reply_text(text=MSG_TOKEN_ACTIVATED.format(duration_hours=hrs))
+            else:
+                try:
+                    return await msg.reply_text(text=MSG_TOKEN_INVALID)
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
+                    return await msg.reply_text(text=MSG_TOKEN_INVALID)
+            
+    txt = MSG_WELCOME.format(user_name=user.first_name if user else "Unknown")
+    link, title = await get_force_info(bot)
+    if link:
+        txt += f"\n\n{MSG_COMMUNITY_CHANNEL.format(channel_title=title)}"
+    
+    btns = [
+        [InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command"),
+         InlineKeyboardButton(MSG_BUTTON_ABOUT, callback_data="about_command")],
+        [InlineKeyboardButton(MSG_BUTTON_GITHUB, url="https://t.me/hashbotz/163"),
+         InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")]
+    ]
+    
+    if link:
+        btns.append([InlineKeyboardButton(MSG_BUTTON_JOIN_CHANNEL.format(channel_title=title), url=link)])
+    
     try:
-        broadcast_id = callback_query.data.split("_")[1]
-        if broadcast_id in broadcast_ids:
-            broadcast_ids[broadcast_id]["cancelled"] = True
-            try:
-                await callback_query.message.edit_text(
-                    MSG_BROADCAST_CANCEL.format(broadcast_id=broadcast_id)
-                )
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-                await callback_query.message.edit_text(
-                    MSG_BROADCAST_CANCEL.format(broadcast_id=broadcast_id)
-                )
+        await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+
+@StreamBot.on_message(filters.command("help") & filters.private)
+async def help_command(bot: Client, msg: Message):
+    if not await check_banned(bot, msg):
+        return
+    if msg.from_user:
+        await log_newusr(bot, msg.from_user.id, msg.from_user.first_name)
+    
+    txt = MSG_HELP.format(max_files=Var.MAX_BATCH_FILES)
+    btns = [[InlineKeyboardButton(MSG_BUTTON_ABOUT, callback_data="about_command")]]
+    
+    link, title = await get_force_info(bot)
+    if link:
+        btns.append([InlineKeyboardButton(MSG_BUTTON_JOIN_CHANNEL.format(channel_title=title), url=link)])
+    
+    btns.append([InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")])
+    try:
+        await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+
+@StreamBot.on_message(filters.command("about") & filters.private)
+async def about_command(bot: Client, msg: Message):
+    if not await check_banned(bot, msg):
+        return
+    if msg.from_user:
+        await log_newusr(bot, msg.from_user.id, msg.from_user.first_name)
+    
+    btns = [
+        [InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command")],
+        [InlineKeyboardButton(MSG_BUTTON_GITHUB, url="https://t.me/hashbotz/163"),
+         InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")]
+    ]
+    
+    try:
+        await msg.reply_text(text=MSG_ABOUT, reply_markup=InlineKeyboardMarkup(btns))
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await msg.reply_text(text=MSG_ABOUT, reply_markup=InlineKeyboardMarkup(btns))
+
+async def send_user_dc(msg: Message, user: User):
+    txt = await gen_dc_txt(user)
+    url = f"https://t.me/{user.username}" if user.username else f"tg://user?id={user.id}"
+    btns = [
+        [InlineKeyboardButton(MSG_BUTTON_VIEW_PROFILE, url=url)],
+        [InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")]
+    ]
+    try:
+        await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+
+async def send_file_dc(msg: Message, file_msg: Message):
+    try:
+        fname = get_fname(file_msg) or "Untitled File"
+        fsize = humanbytes(get_fsize(file_msg))
+        
+        type_map = {
+            "document": MSG_FILE_TYPE_DOCUMENT,
+            "photo": MSG_FILE_TYPE_PHOTO,
+            "video": MSG_FILE_TYPE_VIDEO,
+            "audio": MSG_FILE_TYPE_AUDIO,
+            "voice": MSG_FILE_TYPE_VOICE,
+            "sticker": MSG_FILE_TYPE_STICKER,
+            "animation": MSG_FILE_TYPE_ANIMATION,
+            "video_note": MSG_FILE_TYPE_VIDEO_NOTE
+        }
+        
+        file_type = next((attr for attr in type_map if getattr(file_msg, attr, None)), "unknown")
+        type_display = type_map.get(file_type, MSG_FILE_TYPE_UNKNOWN)
+        
+        dc_id = MSG_DC_UNKNOWN
+        fid = parse_fid(file_msg)
+        if fid:
+            dc_id = fid.dc_id
+        
+        txt = MSG_DC_FILE_INFO.format(
+            file_name=fname,
+            file_size=fsize,
+            file_type=type_display,
+            dc_id=dc_id
+        )
+        
+        btns = [[InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")]]
+        try:
+            await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            await msg.reply_text(text=txt, reply_markup=InlineKeyboardMarkup(btns))
+        
+    except Exception as e:
+        logger.error(f"File DC error: {e}", exc_info=True)
+        await reply_user_err(msg, MSG_DC_FILE_ERROR)
+
+@StreamBot.on_message(filters.command("dc"))
+async def dc_command(bot: Client, msg: Message):
+    if not await check_banned(bot, msg):
+        return
+    if not await force_channel_check(bot, msg):
+        return
+    if not msg.from_user and not msg.reply_to_message:
+        return await reply_user_err(msg, MSG_DC_ANON_ERROR)
+    
+    args = msg.text.strip().split(maxsplit=1)
+    if len(args) > 1:
+        user = await get_user(bot, args[1].strip())
+        if user:
+            await send_user_dc(msg, user)
         else:
-            try:
-                await callback_query.answer(
-                    MSG_BROADCAST_CANCEL.format(broadcast_id=broadcast_id),
-                    show_alert=True
-                )
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-                await callback_query.answer(
-                    MSG_BROADCAST_CANCEL.format(broadcast_id=broadcast_id),
-                    show_alert=True
-                )
-    except Exception as e:
-        logger.error(f"Error in cancel broadcast callback: {e}", exc_info=True)
-        try:
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
+            await reply_user_err(msg, MSG_ERROR_USER_INFO)
+        return
+    
+    if msg.reply_to_message:
+        ref = msg.reply_to_message
+        if ref.media:
+            await send_file_dc(msg, ref)
+        elif ref.from_user:
+            await send_user_dc(msg, ref.from_user)
+        else:
+            await reply_user_err(msg, MSG_DC_INVALID_USAGE)
+        return
+    
+    if msg.from_user:
+        await send_user_dc(msg, msg.from_user)
+    else:
+        await reply_user_err(msg, MSG_DC_ANON_ERROR)
 
-@StreamBot.on_callback_query()
-async def fallback_callback(client: Client, callback_query: CallbackQuery):
+@StreamBot.on_message(filters.command("ping") & filters.private)
+async def ping_command(bot: Client, msg: Message):
+    if not await check_banned(bot, msg):
+        return
+    if not await force_channel_check(bot, msg):
+        return
+    start = time.time()
     try:
-        try:
-            await callback_query.answer(MSG_ERROR_CALLBACK_UNSUPPORTED, show_alert=True)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await callback_query.answer(MSG_ERROR_CALLBACK_UNSUPPORTED, show_alert=True)
-    except Exception as e:
-        logger.error(f"Error in fallback callback: {e}", exc_info=True)
+        sent = await msg.reply_text(text=MSG_PING_START)
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        sent = await msg.reply_text(text=MSG_PING_START)
+    end = time.time()
+    ms = (end - start) * 1000
+    
+    btns = [
+        [InlineKeyboardButton(MSG_BUTTON_GET_HELP, callback_data="help_command"),
+         InlineKeyboardButton(MSG_BUTTON_CLOSE, callback_data="close_panel")]
+    ]
+    
+    try:
+        await sent.edit_text(
+            MSG_PING_RESPONSE.format(time_taken_ms=ms),
+            reply_markup=InlineKeyboardMarkup(btns),
+            disable_web_page_preview=True
+        )
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await sent.edit_text(
+            MSG_PING_RESPONSE.format(time_taken_ms=ms),
+            reply_markup=InlineKeyboardMarkup(btns),
+            disable_web_page_preview=True
+        )
+    except MessageNotModified:
+        pass
+
+
